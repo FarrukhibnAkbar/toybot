@@ -42,3 +42,16 @@ CREATE TABLE IF NOT EXISTS sales (
     created_by INT REFERENCES users(id),
     created_at TIMESTAMP DEFAULT now()
 );
+
+CREATE TABLE audit_logs (
+    id SERIAL PRIMARY KEY,
+    product_id INT NOT NULL,
+    old_quantity NUMERIC,
+    old_buy_price NUMERIC,
+    old_sell_price NUMERIC,
+    new_quantity NUMERIC,
+    new_buy_price NUMERIC,
+    new_sell_price NUMERIC,
+    changed_at TIMESTAMP DEFAULT now(),
+    changed_by INT REFERENCES users(id)
+);

@@ -14,84 +14,126 @@ import (
 func (b *Bot) handleKirim(msg *tgbotapi.Message) {
 	userID := msg.From.ID
 	session, ok := b.sessions[userID]
+	text := strings.TrimSpace(msg.Text)
 
-	// 🔍 Debug log - session mavjudligini tekshirib log qilish
-	if ok {
-		log.Printf("User %d, Session exists: true, State: %v, Text: %s",
-			userID, session.State, msg.Text)
-	} else {
-		log.Printf("User %d, Session exists: false, Text: %s",
-			userID, msg.Text)
-	}
-
-	// Agar session mavjud bo'lmasa — yangi kirim jarayonini boshlaymiz
 	if !ok {
 		b.sessions[userID] = &Session{State: StateKirimName}
 		b.reply(msg.Chat.ID, "📦 Tovar nomini kiriting:")
 		return
 	}
 
-	text := strings.TrimSpace(msg.Text)
-
 	switch session.State {
 	case StateKirimName:
-		log.Println("Processing name:", text)
+		item, err := b.repo.GetItemByName(context.Background(), text)
 		session.TempName = text
-		session.State = StateKirimQty
-		b.reply(msg.Chat.ID, "📏 Tovar miqdorini kiriting (masalan: 10):")
+		if err == nil {
+			// Mahsulot mavjud
+			session.TempID = item.ID
+			session.TempQty = item.Quantity
+			session.TempBuyPrice = item.BuyPrice
+			session.TempSellPrice = item.SellPrice
+			session.State = StateKirimExistsChoice
 
-	case StateKirimQty:
-		log.Println("Processing qty:", text) // ⬅️ Bu "name" emas "qty" bo'lishi kerak
-		qty, err := strconv.ParseFloat(text, 64)
-		if err != nil {
-			b.reply(msg.Chat.ID, "❌ Noto'g'ri son formati. Iltimos, faqat raqam kiriting.")
+			b.reply(msg.Chat.ID,
+				fmt.Sprintf("⚠️ %s tovari mavjud:\nMiqdor: %.2f\nKirim narxi: %.0f\nSotuv narxi: %.0f\n\nYangilash uchun /edit kiriting.",
+					item.Name, item.Quantity, item.BuyPrice, item.SellPrice))
 			return
 		}
+		session.State = StateKirimQty
+		b.reply(msg.Chat.ID, "📏 Miqdorni kiriting:")
+		return
+
+	case StateKirimExistsChoice:
+		if text == "/new" {
+			session.TempID = 0
+			session.State = StateKirimQty
+			b.reply(msg.Chat.ID, "📏 Miqdorni kiriting:")
+			return
+		}
+		if text == "/edit" {
+			session.State = StateKirimQty
+			b.reply(msg.Chat.ID, "✏️ Yangi miqdorni kiriting:")
+			log.Println("qty: ", session.TempQty)
+			return
+		}
+		b.reply(msg.Chat.ID, "❌ /new yoki /edit kiriting.")
+		return
+
+	case StateKirimQty:
+		qty, err := strconv.ParseFloat(text, 64)
+		if err != nil {
+			b.reply(msg.Chat.ID, "❌ Noto‘g‘ri miqdor.")
+			return
+		}
+		log.Println("qty: ", qty)
+		log.Println("tempqty: ", session.TempQty)
 		session.TempQty = qty
+		log.Println("updated tempqty: ", session.TempQty)
 		session.State = StateKirimBuy
-		b.reply(msg.Chat.ID, "💰 Kirim (olingan) narxini kiriting:")
+		b.reply(msg.Chat.ID, "💰 Kirim narxini kiriting:")
+		return
 
 	case StateKirimBuy:
-		log.Println("Processing buy price:", text) // ⬅️ Tuzatildi
 		price, err := strconv.ParseFloat(text, 64)
 		if err != nil {
-			b.reply(msg.Chat.ID, "❌ Noto'g'ri narx formati. Masalan: 25000")
+			b.reply(msg.Chat.ID, "❌ Noto‘g‘ri narx.")
 			return
 		}
 		session.TempBuyPrice = price
 		session.State = StateKirimSell
 		b.reply(msg.Chat.ID, "🏷️ Sotuv narxini kiriting:")
+		return
 
 	case StateKirimSell:
-		log.Println("Processing sell price:", text) // ⬅️ Tuzatildi
 		sell, err := strconv.ParseFloat(text, 64)
 		if err != nil {
-			b.reply(msg.Chat.ID, "❌ Noto'g'ri narx formati. Masalan: 40000")
+			b.reply(msg.Chat.ID, "❌ Noto‘g‘ri narx.")
+			return
+		}
+		session.TempSellPrice = sell
+
+		user, _ := b.repo.GetUserDataByTgID(context.Background(), msg.From.ID)
+		item, err := b.repo.GetItemByName(context.Background(), session.TempName)
+		if session.TempID != 0 && err == nil {
+			// 🔹 Eski qiymatlar
+			oldQty := item.Quantity
+			oldBuy := item.BuyPrice
+			oldSell := item.SellPrice
+
+			newQty := oldQty + session.TempQty
+			newBuy := session.TempBuyPrice
+			newSell := session.TempSellPrice
+
+			_ = b.repo.CreateAuditLog(context.Background(), int(session.TempID),
+				oldQty, oldBuy, oldSell,
+				newQty, newBuy, newSell,
+				int(user.ID),
+			)
+			log.Println("oldQty: ", oldQty)
+			log.Println("tempQty + oldQty: ", session.TempQty+oldQty)
+			log.Println("newQty: ", newQty)
+			log.Println("tempQty: ", session.TempQty)
+			_ = b.repo.UpdateItem(context.Background(), int(session.TempID), newQty, newBuy, newSell)
+
+			b.reply(msg.Chat.ID, fmt.Sprintf("✏️ %s yangilandi!\nYangi miqdor: %.2f\nNarx: %.0f",
+				session.TempName, newQty, newSell))
+			delete(b.sessions, userID)
 			return
 		}
 
-		// ✅ Ma'lumotni bazaga saqlaymiz
-		err = b.repo.AddProduct(context.Background(),
-			session.TempName,
-			session.TempQty,
-			session.TempBuyPrice,
-			sell,
-		)
+		// 🔸 Yangi mahsulot
+		err = b.repo.AddProduct(context.Background(), session.TempName, session.TempQty, session.TempBuyPrice, session.TempSellPrice)
 		if err != nil {
-			b.reply(msg.Chat.ID, fmt.Sprintf("❌ Saqlashda xatolik: %v", err))
+			b.reply(msg.Chat.ID, fmt.Sprintf("❌ Xatolik: %v", err))
 			delete(b.sessions, userID)
 			return
 		}
 
 		b.reply(msg.Chat.ID,
-			fmt.Sprintf("✅ %s dan %.2f dona qo'shildi!\n💰 Kirim: %.0f so'm\n🏷️ Sotuv: %.0f so'm",
-				session.TempName, session.TempQty, session.TempBuyPrice, sell),
+			fmt.Sprintf("✅ %s dan %.2f dona qo'shildi!\n💰 %.0f so‘m\n🏷️ %.0f so‘m",
+				session.TempName, session.TempQty, session.TempBuyPrice, session.TempSellPrice),
 		)
-
-		// 🔚 Sessionni tozalaymiz
 		delete(b.sessions, userID)
-
-	default:
-		b.reply(msg.Chat.ID, "⚠️ Avval /kirim buyrug'ini yozing.")
+		return
 	}
 }

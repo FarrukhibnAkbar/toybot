@@ -53,20 +53,38 @@ func (b *Bot) Start() {
 
 		text := update.Message.Text
 
-		if session, ok := b.sessions[userID]; ok && session.State != StateNone {
-			b.handleKirim(update.Message)
-			continue
-		}
+		// if session, ok := b.sessions[userID]; ok && session.State != StateNone {
+		// 	b.handleKirim(update.Message)
+		// 	continue
+		// }
 
 		switch text {
 		case "/start":
 			b.reply(update.Message.Chat.ID, "👋 Assalomu alaykum!\nBu ToyShop ombor botidir.")
 		case "/help":
-			b.reply(update.Message.Chat.ID, "📋 Mavjud komandalar:\n/start - salomlashish\n/help - yordam")
+			b.resetSession(userID)
+			helpText := `📋 *Mavjud komandalar:*
+		
+			/start – Botni ishga tushirish
+			/help – Yordam oynasini ko‘rsatish
+			/kirim – Omborga yangi tovar qo‘shish
+			/sotish – Mavjud tovarni sotish
+			/hisobot – Foyda, zarar va statistikani ko‘rish
+			/export – Hisobotni Excel fayl sifatida yuklab olish
+	
+			ℹ️ Har bir buyruqni alohida yuboring.`
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, helpText)
+			msg.ParseMode = "Markdown"
+			b.api.Send(msg)
+
 		case "/kirim":
+			b.resetSession(userID)
 			b.handleKirim(update.Message)
+		case "/sotish":
+			b.resetSession(userID)
+			b.handleSotish(update.Message)
 		default:
-			b.reply(update.Message.Chat.ID, "⚠️ Noma’lum komanda. /help buyrug‘ini yozing.")
+			b.handleStep(update.Message)
 		}
 	}
 }
